@@ -17,6 +17,15 @@ import pandas as pd
 import streamlit as st
 
 from config import AppConfig
+
+# Check if API key is configured
+cfg_check = AppConfig()
+if not cfg_check.websocket.api_key:
+    import streamlit as st_temp
+    st_temp.warning(
+        "No AIS_API_KEY found in environment variables. "
+        "Copy .env.example to .env and add your key, or use Sample Data mode."
+    )
 from data_stream import AISDataStream
 from data_cleaner import DataCleaner
 from anomaly_detector import (

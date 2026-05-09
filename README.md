@@ -121,8 +121,10 @@ Maritime_Anomaly_Detector/
 ├── data_cleaner.py        # Validation, filtering, feature engineering
 ├── anomaly_detector.py    # Isolation Forest, DBSCAN, Gap Detector, Scorer
 ├── visualizations.py      # Plotly map + charts
+├── sample_data.py         # Realistic demo data with seeded anomalies
 ├── utils.py               # Shared helpers
 ├── requirements.txt       # Python dependencies
+├── .env.example           # Template for environment variables
 └── README.md              # This file
 ```
 
@@ -140,17 +142,30 @@ Each module is **single-responsibility**, **PEP 8 compliant**, and importable fo
 ### Setup
 
 ```bash
-# 1. Navigate to the project directory
-cd "/Users/anthonyenomoto/GitHub Repo/Maritime_Anomaly_Detector"
+# 1. Clone the repository
+git clone https://github.com/<your-username>/Maritime_Anomaly_Detector.git
+cd Maritime_Anomaly_Detector
 
 # 2. Create a virtual environment (recommended)
 python3 -m venv .venv
+
+# Activate on macOS/Linux:
 source .venv/bin/activate
+
+# Activate on Windows (Command Prompt):
+.venv\Scripts\activate.bat
+
+# Activate on Windows (PowerShell):
+.venv\Scripts\Activate.ps1
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Launch the dashboard
+# 4. Configure your API key (see Configuration section below)
+cp .env.example .env
+# Edit .env and add your AISStream API key
+
+# 5. Launch the dashboard
 streamlit run app.py
 ```
 
@@ -160,13 +175,33 @@ The dashboard opens at `http://localhost:8501`.
 
 | Control | Description |
 |---|---|
+| **Data Source** | Choose between "Live AIS Stream" (requires API key) or "Sample Data (Demo)" for offline exploration. |
 | **Messages to collect** | Slider (100-5000). More messages = richer data but longer load time. |
 | **Refresh Data** | Re-fetches AIS data and re-runs the full pipeline. |
-| **Auto-refresh** | Toggle for periodic re-fetching. |
 
 ---
 
 ## Configuration
+
+### API Key Setup (Required for Live Data)
+
+This project uses an AISStream API key to access live maritime data. **Never commit your API key to version control.**
+
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Edit `.env` and add your key:
+   ```text
+   AIS_API_KEY=your_actual_api_key_here
+   ```
+
+3. The `.env` file is listed in `.gitignore` and will never be uploaded to GitHub.
+
+> **Note:** If no API key is configured, the dashboard will automatically fall back to sample data mode so you can still explore all visualizations and ML models.
+
+### Model Tuning
 
 All settings live in `config.py` as nested `@dataclass` structures:
 
@@ -178,8 +213,6 @@ cfg.isolation_forest.contamination = 0.10   # expect more anomalies
 cfg.dbscan.eps = 0.03                       # tighter spatial clusters
 cfg.ais_gap_threshold_minutes = 15          # more sensitive gap detection
 ```
-
-The API key is embedded in `WebSocketConfig.api_key`.
 
 ---
 
@@ -212,6 +245,12 @@ The API key is embedded in `WebSocketConfig.api_key`.
 | Unsupervised models produce false positives. | Human-in-the-loop review via the Top Flagged table. |
 | AIS data can be spoofed or manipulated. | Gap detector partially addresses this; multi-source validation (SAR, VMS) is recommended for operational deployments. |
 | DBSCAN `eps` is distance-based and may miss clusters at different scales. | Tune `eps` per region or switch to HDBSCAN for hierarchical clustering. |
+
+---
+
+## License
+
+This project is provided for educational and analytical purposes.
 
 ---
 

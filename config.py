@@ -3,6 +3,7 @@ Configuration module for the Maritime Anomaly Detection System.
 Centralizes all settings, API keys, thresholds, and model hyperparameters.
 """
 
+import os  # Added for environment variables
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -11,7 +12,10 @@ from typing import List, Tuple
 class WebSocketConfig:
     """WebSocket connection configuration."""
     url: str = "wss://stream.aisstream.io/v0/stream"
-    api_key: str = "45fd2412a4701deb0032b83736773e97a420c2be"
+    
+    # Read API key from environment variable for security
+    api_key: str = os.getenv("AIS_API_KEY", "")
+    
     reconnect_delay: int = 5
     max_retries: int = 3
 
@@ -76,7 +80,7 @@ class VisualizationConfig:
 @dataclass
 class StreamlitConfig:
     """Streamlit dashboard configuration."""
-    page_title: str = "🚢 Maritime Anomaly Detection Dashboard"
+    page_title: str = "Maritime Anomaly Detection Dashboard"
     page_icon: str = "🚢"
     layout: str = "wide"
     refresh_interval_seconds: int = 30
