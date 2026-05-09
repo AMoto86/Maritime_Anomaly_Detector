@@ -9,7 +9,6 @@ from typing import Optional
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from config import AppConfig
 
@@ -26,8 +25,8 @@ def create_anomaly_map(
 ) -> go.Figure:
     """
     Interactive global scatter-map with vessels colour-coded by anomaly
-    severity.  Clicking a marker opens a hover card with IMO, MMSI,
-    flagged reason and anomaly score.
+    severity.  Hovering a marker shows IMO, MMSI, flagged reason and
+    anomaly score.
     """
     config = config or AppConfig()
     colors = config.visualization.anomaly_colors
@@ -43,45 +42,48 @@ def create_anomaly_map(
         return _empty_map()
 
     df = df.copy()
-    df["marker_color"] = df["severity"].map(severity_to_color).fillna(colors["normal"])
 
-    # Hover template
-    hover_template = (
-        "<b>%{customdata[0]}</b><br>"
-        "IMO: %{customdata[1]}<br>"
-        "MMSI: %{customdata[2]}<br>"
-        "Type: %{customdata[3]}<br>"
-        "Speed: %{customdata[4]} kn<br>"
-        "Severity: %{customdata[5]}<br>"
-        "Score: %{customdata[6]:.2f}<br>"
-        "Flag: %{customdata[7]}<extra></extra>"
-    )
+    # Build a clean hover text column
+    hover_text = []
+    for _, row in df.iterrows():
+        lines = [
+            "<b>{}</b>".format(row.get("name", "Unknown")),
+            "IMO: {}".format(row.get("imo", "N/A") or "N/A"),
+            "MMSI: {}".format(row.get("mmsi", "N/A") or "N/A"),
+            "Type: {}".format(row.get("vessel_type", "Unknown")),
+            "Speed: {:.1f} kn".format(row.get("sog", 0) or 0),
+            "Severity: {}".format(row.get("severity", "Normal")),
+            "Score: {:.2f}".format(row.get("anomaly_score", 0) or 0),
+            "Flag: {}".format(row.get("anomaly_reason", "Normal")),
+        ]
+        hover_text.append("<br>".join(lines))
 
     fig = px.scatter_mapbox(
         df,
         lat="latitude",
         lon="longitude",
-        color="severity",
+        color="severity" if "severity" in df.columns else None,
         color_discrete_map=severity_to_color,
         size="sog",
         size_max=12,
         hover_name=df["name"].fillna("Unknown"),
-        custom_text=[
-            df["name"].fillna("Unknown"),
-            df["imo"].fillna("N/A"),
-            df["mmsi"].fillna("N/A"),
-            df["vessel_type"].fillna("Unknown"),
-            df["sog"].fillna(0),
-            df["severity"].fillna("Normal"),
-            df["anomaly_score"].fillna(0),
-            df["anomaly_reason"].fillna("Normal"),
-        ],
-        hover_template=hover_template,
+        hover_data={
+            "imo": True,
+            "mmsi": True,
+            "vessel_type": True,
+            "sog": ":.1f",
+            "severity": True,
+            "anomaly_score": ":.2f",
+            "anomaly_reason": True,
+        },
         center={"lat": config.visualization.map_center[0],
                 "lon": config.visualization.map_center[1]},
         zoom=config.visualization.map_zoom,
         opacity=0.85,
     )
+
+    # Override with rich hover text
+    fig.update_traces(hovertext=hover_text, hoverinfo="text")
 
     fig.update_layout(
         mapbox_style="carto-positron",
@@ -114,10 +116,7 @@ def create_trend_chart(
     df: pd.DataFrame,
     config: Optional[AppConfig] = None,
 ) -> go.Figure:
-    """
-    Time-series of anomaly scores over the observation window,
-    grouped by severity.
-    """
+    """Time-series of anomaly severity counts over the observation window."""
     config = config or AppConfig()
     if df.empty or "timestamp" not in df.columns:
         return _empty_chart("Trend Chart")
@@ -126,7 +125,7 @@ def create_trend_chart(
     df["hour"] = df["timestamp"].dt.floor("h")
 
     agg = (
-        df.groupby(["hour", "severity"])
+        df.groupby(["hour", "severity"], observed=True)
         .size()
         .reset_index(name="count")
     )
@@ -153,10 +152,7 @@ def create_distribution_chart(
     df: pd.DataFrame,
     config: Optional[AppConfig] = None,
 ) -> go.Figure:
-    """
-    Histogram of anomaly scores with a vertical line at the
-    medium/high threshold.
-    """
+    """Histogram of anomaly scores with a vertical line at the high threshold."""
     config = config or AppConfig()
     if df.empty or "anomaly_score" not in df.columns:
         return _empty_chart("Distribution Chart")
@@ -164,7 +160,7 @@ def create_distribution_chart(
     fig = px.histogram(
         df,
         x="anomaly_score",
-        color="severity",
+        color="severity" if "severity" in df.columns else None,
         title="Distribution of Anomaly Scores",
         labels={"anomaly_score": "Anomaly Score"},
         nbins=50,
@@ -175,7 +171,7 @@ def create_distribution_chart(
         x=threshold,
         line_dash="dash",
         line_color="red",
-        annotation_text=f"High threshold ({threshold})",
+        annotation_text="High threshold ({})".format(threshold),
         annotation_position="top right",
     )
     return fig
@@ -189,10 +185,7 @@ def create_correlation_heatmap(
     df: pd.DataFrame,
     config: Optional[AppConfig] = None,
 ) -> go.Figure:
-    """
-    Heatmap of correlations between numeric navigation features
-    and the anomaly score.
-    """
+    """Heatmap of correlations between numeric navigation features and anomaly score."""
     config = config or AppConfig()
     numeric_cols = [
         "sog", "cog", "rot", "heading", "heading_cog_delta",
@@ -221,7 +214,7 @@ def create_correlation_heatmap(
 def _empty_chart(title: str) -> go.Figure:
     fig = go.Figure()
     fig.add_annotation(
-        text=f"{title} -- no data",
+        text="{} -- no data".format(title),
         showarrow=False,
         font_size=16,
         xref="paper", yref="paper",

@@ -11,7 +11,7 @@ from typing import List, Tuple
 class WebSocketConfig:
     """WebSocket connection configuration."""
     url: str = "wss://stream.aisstream.io/v0/stream"
-    api_key: str = "7816ef206a09ac6155a92ea4ce38b278721d6430"
+    api_key: str = "45fd2412a4701deb0032b83736773e97a420c2be"
     reconnect_delay: int = 5
     max_retries: int = 3
 

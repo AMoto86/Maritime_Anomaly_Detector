@@ -1,6 +1,11 @@
 """
 WebSocket connection handler for AIS data streaming.
-Manages connection, reconnection, message parsing, and buffering.
+Manages connection, subscription handshake, message parsing, and buffering.
+
+Protocol (per aisstream.io docs):
+    1. Connect to wss://stream.aisstream.io/v0/stream (no key in URL)
+    2. Send JSON subscription message with Apikey + bounding box
+    3. Receive AIS messages as JSON stream
 """
 
 import asyncio
@@ -45,18 +50,25 @@ class AISDataStream:
         retries = 0
         while retries < self.config.websocket.max_retries:
             try:
-                url = (
-                    f"{self.config.websocket.url}"
-                    f"?api_key={self.config.websocket.api_key}"
-                )
-                logger.info("Connecting to AIS stream ...")
+                # Per aisstream.io docs: connect WITHOUT key in URL
+                url = self.config.websocket.url.rstrip("/")
+                logger.info("Connecting to AIS stream: %s", url)
 
                 async with websockets.connect(
                     url, ping_interval=20, ping_timeout=20
                 ) as ws:
                     self.is_connected = True
                     self._connection_start_time = time.time()
-                    logger.info("Connected successfully.")
+                    logger.info("Connected. Sending subscription...")
+
+                    # Send subscription message (exact format from docs)
+                    subscription = {
+                        "Apikey": self.config.websocket.api_key,
+                        "BoundingBoxes": [[-90, -180], [90, 180]],
+                        "FiltersShipMMSI": [],
+                        "FilterMessageTypes": ["PositionReport"],
+                    }
+                    await ws.send(json.dumps(subscription))
 
                     messages: List[Dict[str, Any]] = []
                     try:
@@ -81,7 +93,9 @@ class AISDataStream:
                 ConnectionRefusedError,
             ) as exc:
                 retries += 1
-                logger.error("Connection attempt %d failed: %s", retries, exc)
+                logger.error(
+                    "Connection attempt %d failed: %s", retries, exc
+                )
                 if retries < self.config.websocket.max_retries:
                     wait = self.config.websocket.reconnect_delay * retries
                     logger.info("Retrying in %d s ...", wait)
@@ -129,7 +143,9 @@ class AISDataStream:
             "imo": AISDataStream._extract(data, ("imo", "IMO")),
             "mmsi": AISDataStream._extract(data, ("mmsi", "MMSI")),
             "callsign": AISDataStream._extract(data, ("callsign", "callSign")),
-            "name": AISDataStream._extract(data, ("name", "shipname", "vesselName")),
+            "name": AISDataStream._extract(
+                data, ("name", "shipname", "vesselName")
+            ),
             "latitude": AISDataStream._to_float(
                 AISDataStream._extract(data, ("lat", "latitude", "LAT"))
             ),
@@ -160,7 +176,9 @@ class AISDataStream:
             "status": AISDataStream._extract(
                 data, ("status", "navStatus", "navigationStatus")
             ),
-            "destination": AISDataStream._extract(data, ("dest", "destination")),
+            "destination": AISDataStream._extract(
+                data, ("dest", "destination")
+            ),
             "timestamp": AISDataStream._get_timestamp(data),
         }
 
