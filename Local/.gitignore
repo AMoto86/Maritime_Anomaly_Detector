@@ -1,0 +1,8 @@
+# Never commit this folder's contents
+.env
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.idea/
+.DS_Store
