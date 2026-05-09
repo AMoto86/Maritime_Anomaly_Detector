@@ -34,8 +34,8 @@ class DataCleaner:
         logger.info("Cleaning %d records ...", initial)
 
         df = self._drop_duplicates(df)
-        df = self._validate_geographic_bounds(df)
         df = self._clean_numerics(df)
+        df = self._validate_geographic_bounds(df)
         df = self._filter_unrealistic_speed(df)
         df = self._impute_missing(df)
         df = self._engineer_features(df)
