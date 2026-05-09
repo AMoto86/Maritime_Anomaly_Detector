@@ -2,10 +2,12 @@
 WebSocket connection handler for AIS data streaming.
 Manages connection, subscription handshake, message parsing, and buffering.
 
-Protocol (per aisstream.io docs):
+Protocol (per aisstream.io documentation):
     1. Connect to wss://stream.aisstream.io/v0/stream (no key in URL)
-    2. Send JSON subscription message with Apikey + bounding box
-    3. Receive AIS messages as JSON stream
+    2. Send JSON subscription message within 3 seconds:
+       - "APIKey" (capital K) for authentication
+       - "BoundingBoxes" as array of corner pairs: [[[lat1,lon1],[lat2,lon2]], ...]
+    3. Receive AIS messages with nested structure: Message[Type] + MetaData
 """
 
 import asyncio
@@ -50,7 +52,7 @@ class AISDataStream:
         retries = 0
         while retries < self.config.websocket.max_retries:
             try:
-                # Per aisstream.io docs: connect WITHOUT key in URL
+                # Connect WITHOUT key in URL (per docs)
                 url = self.config.websocket.url.rstrip("/")
                 logger.info("Connecting to AIS stream: %s", url)
 
@@ -59,16 +61,19 @@ class AISDataStream:
                 ) as ws:
                     self.is_connected = True
                     self._connection_start_time = time.time()
-                    logger.info("Connected. Sending subscription...")
+                    logger.info("Connected. Sending subscription within 3s...")
 
-                    # Send subscription message (exact format from docs)
+                    # Send subscription message (EXACT format from docs)
+                    # Note: "APIKey" with capital K, bounding boxes as array of pairs
                     subscription = {
-                        "Apikey": self.config.websocket.api_key,
-                        "BoundingBoxes": [[-90, -180], [90, 180]],
+                        "APIKey": self.config.websocket.api_key,
+                        "BoundingBoxes": [[[-90.0, -180.0], [90.0, 180.0]]],
                         "FiltersShipMMSI": [],
                         "FilterMessageTypes": ["PositionReport"],
                     }
+
                     await ws.send(json.dumps(subscription))
+                    logger.info("Subscription sent.")
 
                     messages: List[Dict[str, Any]] = []
                     try:
@@ -123,12 +128,27 @@ class AISDataStream:
         return df
 
     # ------------------------------------------------------------------ #
-    #  Parsing helpers
+    #  Parsing helpers (handles nested AISStream message format)
     # ------------------------------------------------------------------ #
 
     @staticmethod
     def _parse_ais_message(raw: Any) -> Optional[Dict[str, Any]]:
-        """Parse a single raw WebSocket message into a normalised dict."""
+        """
+        Parse a single raw WebSocket message into a normalised dict.
+
+        AISStream messages have this structure:
+        {
+            "Message": {"PositionReport": {...}},
+            "MessageType": "PositionReport",
+            "MetaData": {
+                "MMSI": 123456789,
+                "ShipName": "VESSEL",
+                "latitude": 12.34,
+                "longitude": -56.78,
+                "time_utc": "2024-..."
+            }
+        }
+        """
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
         try:
@@ -139,51 +159,72 @@ class AISDataStream:
         if not isinstance(data, dict):
             return None
 
+        # Extract from MetaData (primary source for position/identity)
+        meta = data.get("MetaData", {})
+        msg_body = {}
+
+        # Get the actual AIS message body (nested under MessageType)
+        msg_type = data.get("MessageType", "")
+        if msg_type and "Message" in data:
+            msg_body = data["Message"].get(msg_type, {})
+
         parsed = {
-            "imo": AISDataStream._extract(data, ("imo", "IMO")),
-            "mmsi": AISDataStream._extract(data, ("mmsi", "MMSI")),
-            "callsign": AISDataStream._extract(data, ("callsign", "callSign")),
-            "name": AISDataStream._extract(
-                data, ("name", "shipname", "vesselName")
+            "imo": AISDataStream._extract(
+                msg_body, ("ImoNumber", "IMO")
+            ) or AISDataStream._extract(meta, ("imo",)),
+            "mmsi": str(
+                meta.get("MMSI") or msg_body.get("UserID", "")
+            ) if meta.get("MMSI") or msg_body.get("UserID") else None,
+            "callsign": AISDataStream._extract(
+                msg_body, ("CallSign",)
+            ),
+            "name": meta.get("ShipName") or AISDataStream._extract(
+                msg_body, ("Name",)
             ),
             "latitude": AISDataStream._to_float(
-                AISDataStream._extract(data, ("lat", "latitude", "LAT"))
+                meta.get("latitude") or msg_body.get("Latitude")
             ),
             "longitude": AISDataStream._to_float(
-                AISDataStream._extract(data, ("lon", "longitude", "LON"))
+                meta.get("longitude") or msg_body.get("Longitude")
             ),
             "sog": AISDataStream._to_float(
-                AISDataStream._extract(data, ("sog", "speed", "SOG"))
+                msg_body.get("Sog") or meta.get("sog")
             ),
             "cog": AISDataStream._to_float(
-                AISDataStream._extract(data, ("cog", "course", "COG"))
+                msg_body.get("Cog") or meta.get("cog")
             ),
             "heading": AISDataStream._to_float(
-                AISDataStream._extract(data, ("heading", "hdg", "HEAD"))
+                msg_body.get("TrueHeading") or meta.get("heading")
             ),
             "rot": AISDataStream._to_float(
-                AISDataStream._extract(data, ("rot", "rateOfTurn", "ROT"))
+                msg_body.get("RateOfTurn") or meta.get("rot")
             ),
             "vessel_type": AISDataStream._extract(
-                data, ("type", "vesselType", "shipType", "vessel_type")
+                msg_body, ("Type",)
             ),
             "length": AISDataStream._to_float(
-                AISDataStream._extract(data, ("length", "loa", "lengthOverall"))
+                msg_body.get("Dimension", {}).get("A")
             ),
             "width": AISDataStream._to_float(
-                AISDataStream._extract(data, ("width", "beam", "widthOverall"))
+                msg_body.get("Dimension", {}).get("B")
             ),
             "status": AISDataStream._extract(
-                data, ("status", "navStatus", "navigationStatus")
+                msg_body, ("NavigationalStatus",)
             ),
             "destination": AISDataStream._extract(
-                data, ("dest", "destination")
+                msg_body, ("Destination",)
             ),
-            "timestamp": AISDataStream._get_timestamp(data),
+            "timestamp": meta.get("time_utc") or datetime.now().isoformat(),
         }
 
-        # Require at least lat/lon
+        # Require at least lat/lon to be valid
         if parsed["latitude"] is None or parsed["longitude"] is None:
+            return None
+
+        # Validate coordinate ranges
+        if not (-90 <= parsed["latitude"] <= 90):
+            return None
+        if not (-180 <= parsed["longitude"] <= 180):
             return None
 
         return parsed
@@ -203,18 +244,6 @@ class AISDataStream:
             return float(value)
         except (ValueError, TypeError):
             return None
-
-    @staticmethod
-    def _get_timestamp(data: dict) -> str:
-        for k in ("timestamp", "time", "ts", "receivedTime", "t"):
-            if k in data and data[k]:
-                try:
-                    if isinstance(data[k], (int, float)):
-                        return datetime.fromtimestamp(data[k]).isoformat()
-                    return str(data[k])
-                except (ValueError, OSError):
-                    continue
-        return datetime.now().isoformat()
 
     # ------------------------------------------------------------------ #
     #  Diagnostics
