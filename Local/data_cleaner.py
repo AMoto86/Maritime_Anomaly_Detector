@@ -34,12 +34,25 @@ class DataCleaner:
         logger.info("Cleaning %d records ...", initial)
 
         df = self._drop_duplicates(df)
+        logger.info("  After drop_duplicates: %d records", len(df))
+
         df = self._clean_numerics(df)
+        logger.info("  After clean_numerics: %d records", len(df))
+
         df = self._validate_geographic_bounds(df)
+        logger.info("  After validate_geographic_bounds: %d records", len(df))
+
         df = self._filter_unrealistic_speed(df)
+        logger.info("  After filter_unrealistic_speed: %d records", len(df))
+
         df = self._impute_missing(df)
+        logger.info("  After impute_missing: %d records", len(df))
+
         df = self._engineer_features(df)
+        logger.info("  After engineer_features: %d records", len(df))
+
         df = self._parse_timestamps(df)
+        logger.info("  After parse_timestamps: %d records", len(df))
 
         logger.info("Cleaning done: %d -> %d records.", initial, len(df))
         return df
