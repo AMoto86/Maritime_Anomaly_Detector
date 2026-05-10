@@ -4,12 +4,10 @@ Manages connection, subscription handshake, message parsing, and buffering.
 
 Protocol (per aisstream.io documentation):
     1. Connect to wss://stream.aisstream.io/v0/stream (no key in URL)
-    2. Send JSON subscription message WITHIN 3 SECONDS:
-       - "APIKey" (capital K) is required
-       - BoundingBoxes format: [[[lat1, lon1], [lat2, lon2]], ...]
-    3. Receive AIS messages as nested JSON:
-       - Position in Message.PositionReport.Latitude/Longitude
-       - Metadata in MetaData (MMSI, ShipName, time_utc)
+    2. Send JSON subscription message within 3 seconds:
+       - "APIKey" (capital K) for authentication
+       - "BoundingBoxes" as array of corner pairs: [[[lat1,lon1],[lat2,lon2]], ...]
+    3. Receive AIS messages with nested structure: Message[Type] + MetaData
 """
 
 import asyncio
@@ -54,6 +52,7 @@ class AISDataStream:
         retries = 0
         while retries < self.config.websocket.max_retries:
             try:
+                # Connect WITHOUT key in URL (per docs)
                 url = self.config.websocket.url.rstrip("/")
                 logger.info("Connecting to AIS stream: %s", url)
 
@@ -62,11 +61,19 @@ class AISDataStream:
                 ) as ws:
                     self.is_connected = True
                     self._connection_start_time = time.time()
+                    logger.info("Connected. Sending subscription within 3s...")
 
-                    # Send subscription IMMEDIATELY (must be within 3 seconds)
-                    subscription = self._build_subscription()
+                    # Send subscription message (EXACT format from docs)
+                    # Note: "APIKey" with capital K, bounding boxes as array of pairs
+                    subscription = {
+                        "APIKey": self.config.websocket.api_key,
+                        "BoundingBoxes": [[[-90.0, -180.0], [90.0, 180.0]]],
+                        "FiltersShipMMSI": [],
+                        "FilterMessageTypes": ["PositionReport"],
+                    }
+
                     await ws.send(json.dumps(subscription))
-                    logger.info("Subscription sent: %s", json.dumps(subscription))
+                    logger.info("Subscription sent.")
 
                     messages: List[Dict[str, Any]] = []
                     try:
@@ -108,16 +115,6 @@ class AISDataStream:
 
         return self.data_buffer
 
-    def _build_subscription(self) -> Dict[str, Any]:
-        """Build the subscription message per aisstream.io docs."""
-        # Global bounding box: [[[lat_min, lon_min], [lat_max, lon_max]]]
-        # Note the triple nesting: list of boxes, each box has 2 corners
-        subscription = {
-            "APIKey": self.config.websocket.api_key,
-            "BoundingBoxes": [[[-90.0, -180.0], [90.0, 180.0]]],
-        }
-        return subscription
-
     def to_dataframe(
         self, messages: Optional[List[Dict[str, Any]]] = None
     ) -> pd.DataFrame:
@@ -131,7 +128,7 @@ class AISDataStream:
         return df
 
     # ------------------------------------------------------------------ #
-    #  Parsing helpers (updated for nested AIS message structure)
+    #  Parsing helpers (handles nested AISStream message format)
     # ------------------------------------------------------------------ #
 
     @staticmethod
@@ -141,9 +138,15 @@ class AISDataStream:
 
         AISStream messages have this structure:
         {
-            "Message": {"PositionReport": {"Latitude": ..., "Longitude": ...}},
+            "Message": {"PositionReport": {...}},
             "MessageType": "PositionReport",
-            "MetaData": {"MMSI": ..., "ShipName": ..., "latitude": ..., ...}
+            "MetaData": {
+                "MMSI": 123456789,
+                "ShipName": "VESSEL",
+                "latitude": 12.34,
+                "longitude": -56.78,
+                "time_utc": "2024-..."
+            }
         }
         """
         if isinstance(raw, bytes):
@@ -156,85 +159,72 @@ class AISDataStream:
         if not isinstance(data, dict):
             return None
 
-        # Extract nested message and metadata
-        message = data.get("Message", {})
+        # Extract from MetaData (primary source for position/identity)
         meta = data.get("MetaData", {})
-        msg_type = data.get("MessageType", "")
+        msg_body = {}
 
-        # Get position report fields (or other message type)
-        pos_report = message.get("PositionReport", {})
+        # Get the actual AIS message body (nested under MessageType)
+        msg_type = data.get("MessageType", "")
+        if msg_type and "Message" in data:
+            msg_body = data["Message"].get(msg_type, {})
 
         parsed = {
-            "imo": AISDataStream._extract(meta, ("IMO", "ImoNumber")) or \
-                   AISDataStream._extract(pos_report, ("ImoNumber",)),
-            "mmsi": str(AISDataStream._extract(
-                meta, ("MMSI",)
-            ) or AISDataStream._extract(pos_report, ("UserID",))) \
-                    if AISDataStream._extract(meta, ("MMSI",)) or \
-                       AISDataStream._extract(pos_report, ("UserID",)) else None,
-            "callsign": AISDataStream._extract(meta, ("CallSign",)),
-            "name": AISDataStream._extract(
-                meta, ("ShipName", "Name")
+            "imo": AISDataStream._extract(
+                msg_body, ("ImoNumber", "IMO")
+            ) or AISDataStream._extract(meta, ("imo",)),
+            "mmsi": str(
+                meta.get("MMSI") or msg_body.get("UserID", "")
+            ) if meta.get("MMSI") or msg_body.get("UserID") else None,
+            "callsign": AISDataStream._extract(
+                msg_body, ("CallSign",)
             ),
-            # Latitude/Longitude from both MetaData and PositionReport
+            "name": meta.get("ShipName") or AISDataStream._extract(
+                msg_body, ("Name",)
+            ),
             "latitude": AISDataStream._to_float(
-                AISDataStream._extract(meta, ("latitude",)) or \
-                AISDataStream._to_float(AISDataStream._extract(
-                    pos_report, ("Latitude",)
-                ))
+                meta.get("latitude") or msg_body.get("Latitude")
             ),
             "longitude": AISDataStream._to_float(
-                AISDataStream._extract(meta, ("longitude",)) or \
-                AISDataStream._to_float(AISDataStream._extract(
-                    pos_report, ("Longitude",)
-                ))
+                meta.get("longitude") or msg_body.get("Longitude")
             ),
             "sog": AISDataStream._to_float(
-                AISDataStream._extract(pos_report, ("Sog",)) or \
-                AISDataStream._extract(meta, ("sog", "speed"))
+                msg_body.get("Sog") or meta.get("sog")
             ),
             "cog": AISDataStream._to_float(
-                AISDataStream._extract(pos_report, ("Cog",)) or \
-                AISDataStream._extract(meta, ("cog", "course"))
+                msg_body.get("Cog") or meta.get("cog")
             ),
             "heading": AISDataStream._to_float(
-                AISDataStream._extract(pos_report, ("TrueHeading",)) or \
-                AISDataStream._extract(meta, ("heading", "hdg"))
+                msg_body.get("TrueHeading") or meta.get("heading")
             ),
             "rot": AISDataStream._to_float(
-                AISDataStream._extract(pos_report, ("RateOfTurn",)) or \
-                AISDataStream._extract(meta, ("rot", "rateOfTurn"))
+                msg_body.get("RateOfTurn") or meta.get("rot")
             ),
             "vessel_type": AISDataStream._extract(
-                meta, ("ShipType", "type", "vesselType")
+                msg_body, ("Type",)
             ),
             "length": AISDataStream._to_float(
-                AISDataStream._extract(meta, ("Length",)) or \
-                AISDataStream._to_float(AISDataStream._extract(
-                    pos_report, ("Dimension", {}).get("A") if isinstance(
-                        AISDataStream._extract(pos_report, ("Dimension",)), dict
-                    ) else None
-                ))
+                msg_body.get("Dimension", {}).get("A")
             ),
             "width": AISDataStream._to_float(
-                AISDataStream._extract(meta, ("Width",)) or \
-                AISDataStream._to_float(AISDataStream._extract(
-                    pos_report, ("Dimension", {}).get("B") if isinstance(
-                        AISDataStream._extract(pos_report, ("Dimension",)), dict
-                    ) else None
-                ))
+                msg_body.get("Dimension", {}).get("B")
             ),
             "status": AISDataStream._extract(
-                meta, ("NavigationalStatus",)
-            ) or AISDataStream._to_float(AISDataStream._extract(
-                pos_report, ("NavigationalStatus",)
-            )),
-            "destination": AISDataStream._extract(meta, ("Destination",)),
+                msg_body, ("NavigationalStatus",)
+            ),
+            "destination": AISDataStream._extract(
+                msg_body, ("Destination",)
+            ),
             "timestamp": meta.get("time_utc") or datetime.now().isoformat(),
         }
 
-        # Require at least lat/lon
+        # Require at least lat/lon to be valid
         if parsed["latitude"] is None or parsed["longitude"] is None:
+            return None
+
+        # Validate coordinate ranges
+        if not (-90 <= parsed["latitude"] <= 90):
+            return None
+        if not (-180 <= parsed["longitude"] <= 180):
             return None
 
         return parsed

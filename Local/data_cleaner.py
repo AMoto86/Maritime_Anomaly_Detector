@@ -183,24 +183,19 @@ class DataCleaner:
         if "timestamp" not in df.columns:
             return df
 
-        # Try parsing with the API format first, then fall back to default
-        parsed = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+        # Strip trailing " UTC" text that breaks parsing, then parse once
+        ts = df["timestamp"].astype(str).str.rstrip(" UTC")
+        parsed = pd.to_datetime(ts, errors="coerce", utc=True)
 
-        # For any that still failed, try stripping the trailing "UTC" text
-        mask_failed = parsed.isna() & df["timestamp"].notna()
-        if mask_failed.any():
-            cleaned = df.loc[mask_failed, "timestamp"].astype(str).str.rstrip(" UTC")
-            parsed.loc[mask_failed] = pd.to_datetime(cleaned, errors="coerce", utc=True)
-
-        # Last resort: assign current time for any remaining unparseable values
-        still_failed = parsed.isna() & df["timestamp"].notna()
-        if still_failed.any():
+        # Fill any remaining unparseable values with current time
+        failed = parsed.isna() & df["timestamp"].notna()
+        if failed.any():
             logger.warning(
                 "%d timestamps could not be parsed – using current time.",
-                still_failed.sum(),
+                failed.sum(),
             )
-            parsed.loc[still_failed] = pd.Timestamp.now(tz="UTC")
+            parsed = parsed.fillna(pd.Timestamp.now(tz="UTC"))
 
-        # Truncate to seconds and remove timezone (Plotly can't serialize tz-aware ns datetimes)
+        # Remove timezone and truncate to seconds (Plotly can't serialize tz-aware ns datetimes)
         df["timestamp"] = parsed.dt.tz_localize(None).dt.floor("s")
         return df

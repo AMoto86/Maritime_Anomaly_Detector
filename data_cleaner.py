@@ -34,12 +34,25 @@ class DataCleaner:
         logger.info("Cleaning %d records ...", initial)
 
         df = self._drop_duplicates(df)
-        df = self._validate_geographic_bounds(df)
+        logger.info("  After drop_duplicates: %d records", len(df))
+
         df = self._clean_numerics(df)
+        logger.info("  After clean_numerics: %d records", len(df))
+
+        df = self._validate_geographic_bounds(df)
+        logger.info("  After validate_geographic_bounds: %d records", len(df))
+
         df = self._filter_unrealistic_speed(df)
+        logger.info("  After filter_unrealistic_speed: %d records", len(df))
+
         df = self._impute_missing(df)
+        logger.info("  After impute_missing: %d records", len(df))
+
         df = self._engineer_features(df)
+        logger.info("  After engineer_features: %d records", len(df))
+
         df = self._parse_timestamps(df)
+        logger.info("  After parse_timestamps: %d records", len(df))
 
         logger.info("Cleaning done: %d -> %d records.", initial, len(df))
         return df
@@ -56,18 +69,10 @@ class DataCleaner:
             df = df.drop_duplicates(keep="last")
         return df
 
-    def _validate_geographic_bounds(self, df: pd.DataFrame) -> pd.DataFrame:
-        cfg = self.config.data_cleaning
-        mask = (
-            (df["latitude"] >= cfg.min_latitude)
-            & (df["latitude"] <= cfg.max_latitude)
-            & (df["longitude"] >= cfg.min_longitude)
-            & (df["longitude"] <= cfg.max_longitude)
-        )
-        return df[mask]
 
     def _clean_numerics(self, df: pd.DataFrame) -> pd.DataFrame:
         cfg = self.config.data_cleaning
+
         for col in (
             "sog", "cog", "rot", "latitude", "longitude",
             "heading", "length", "width",
@@ -75,13 +80,46 @@ class DataCleaner:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
+        # Only filter on non-NaN values — don't drop rows just because
+        # a field is missing from the API response.
         if "sog" in df.columns:
-            df = df[(df["sog"] >= cfg.min_speed) & (df["sog"] <= cfg.max_speed)]
+            sog_valid = df["sog"].notna()
+            df = df[~sog_valid | ((df["sog"] >= cfg.min_speed) & (df["sog"] <= cfg.max_speed))]
         if "cog" in df.columns:
-            df = df[(df["cog"] >= cfg.min_cog) & (df["cog"] <= cfg.max_cog)]
+            cog_valid = df["cog"].notna()
+            df = df[~cog_valid | ((df["cog"] >= cfg.min_cog) & (df["cog"] <= cfg.max_cog))]
         if "rot" in df.columns:
-            df = df[(df["rot"] >= cfg.min_rot) & (df["rot"] <= cfg.max_rot)]
+            rot_valid = df["rot"].notna()
+            df = df[~rot_valid | ((df["rot"] >= cfg.min_rot) & (df["rot"] <= cfg.max_rot))]
         return df
+
+
+
+
+
+
+    def _validate_geographic_bounds(self, df: pd.DataFrame) -> pd.DataFrame:
+        cfg = self.config.data_cleaning
+
+        mask = (
+            (df["latitude"] >= cfg.min_latitude)
+            & (df["latitude"] <= cfg.max_latitude)
+            & (df["longitude"] >= cfg.min_longitude)
+            & (df["longitude"] <= cfg.max_longitude)
+        )
+
+        return df[mask]
+
+
+
+
+
+
+
+
+
+
+
 
     def _filter_unrealistic_speed(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -95,7 +133,7 @@ class DataCleaner:
         valid_speed = df["sog"] <= cfg.max_speed_normal
         is_high_speed = df["vessel_type"].astype(str).str.upper().isin(
             [t.upper() for t in cfg.high_speed_craft_types]
-        )
+            )
         mask = valid_speed | is_high_speed
         return df[mask]
 
@@ -142,8 +180,22 @@ class DataCleaner:
     @staticmethod
     def _parse_timestamps(df: pd.DataFrame) -> pd.DataFrame:
         """Convert timestamp column to datetime, handling errors."""
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            # Drop rows where timestamp could not be parsed
-            df = df.dropna(subset=["timestamp"])
+        if "timestamp" not in df.columns:
+            return df
+
+        # Strip trailing " UTC" text that breaks parsing, then parse once
+        ts = df["timestamp"].astype(str).str.rstrip(" UTC")
+        parsed = pd.to_datetime(ts, errors="coerce", utc=True)
+
+        # Fill any remaining unparseable values with current time
+        failed = parsed.isna() & df["timestamp"].notna()
+        if failed.any():
+            logger.warning(
+                "%d timestamps could not be parsed – using current time.",
+                failed.sum(),
+            )
+            parsed = parsed.fillna(pd.Timestamp.now(tz="UTC"))
+
+        # Remove timezone and truncate to seconds (Plotly can't serialize tz-aware ns datetimes)
+        df["timestamp"] = parsed.dt.tz_localize(None).dt.floor("s")
         return df
