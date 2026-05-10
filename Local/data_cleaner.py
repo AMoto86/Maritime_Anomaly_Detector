@@ -201,6 +201,6 @@ class DataCleaner:
             )
             parsed.loc[still_failed] = pd.Timestamp.now(tz="UTC")
 
-        # Convert to second-level precision (Plotly can't handle ns precision)
-        df["timestamp"] = parsed.astype("datetime64[s, UTC]")
+        # Truncate to seconds and remove timezone (Plotly can't serialize tz-aware ns datetimes)
+        df["timestamp"] = parsed.dt.tz_localize(None).dt.floor("s")
         return df
