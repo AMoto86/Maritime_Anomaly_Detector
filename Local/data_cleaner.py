@@ -56,18 +56,20 @@ class DataCleaner:
             df = df.drop_duplicates(keep="last")
         return df
 
-    def _validate_geographic_bounds(self, df: pd.DataFrame) -> pd.DataFrame:
-        cfg = self.config.data_cleaning
-        mask = (
-            (df["latitude"] >= cfg.min_latitude)
-            & (df["latitude"] <= cfg.max_latitude)
-            & (df["longitude"] >= cfg.min_longitude)
-            & (df["longitude"] <= cfg.max_longitude)
-        )
-        return df[mask]
 
     def _clean_numerics(self, df: pd.DataFrame) -> pd.DataFrame:
         cfg = self.config.data_cleaning
+
+
+
+
+
+
+
+
+
+
+
         for col in (
             "sog", "cog", "rot", "latitude", "longitude",
             "heading", "length", "width",
@@ -83,6 +85,39 @@ class DataCleaner:
             df = df[(df["rot"] >= cfg.min_rot) & (df["rot"] <= cfg.max_rot)]
         return df
 
+
+
+
+
+
+    def _validate_geographic_bounds(self, df: pd.DataFrame) -> pd.DataFrame:
+        cfg = self.config.data_cleaning
+
+
+
+
+
+
+        mask = (
+            (df["latitude"] >= cfg.min_latitude)
+            & (df["latitude"] <= cfg.max_latitude)
+            & (df["longitude"] >= cfg.min_longitude)
+            & (df["longitude"] <= cfg.max_longitude)
+        )
+
+        return df[mask]
+
+
+
+
+
+
+
+
+
+
+
+
     def _filter_unrealistic_speed(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Remove records with SOG > 30 knots unless the vessel is a
@@ -90,16 +125,47 @@ class DataCleaner:
         """
         cfg = self.config.data_cleaning
         if "sog" not in df.columns or "vessel_type" not in df.columns:
-            return df
+        return df
+
+
+
+
+
+
+
+
+
 
         valid_speed = df["sog"] <= cfg.max_speed_normal
         is_high_speed = df["vessel_type"].astype(str).str.upper().isin(
             [t.upper() for t in cfg.high_speed_craft_types]
-        )
+            )
         mask = valid_speed | is_high_speed
         return df[mask]
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     @staticmethod
+
+
+
+
+
+
     def _impute_missing(df: pd.DataFrame) -> pd.DataFrame:
         """Fill / cap missing numeric values with sensible defaults."""
         if "sog" in df.columns:
