@@ -80,12 +80,17 @@ class DataCleaner:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
+        # Only filter on non-NaN values — don't drop rows just because
+        # a field is missing from the API response.
         if "sog" in df.columns:
-            df = df[(df["sog"] >= cfg.min_speed) & (df["sog"] <= cfg.max_speed)]
+            sog_valid = df["sog"].notna()
+            df = df[~sog_valid | ((df["sog"] >= cfg.min_speed) & (df["sog"] <= cfg.max_speed))]
         if "cog" in df.columns:
-            df = df[(df["cog"] >= cfg.min_cog) & (df["cog"] <= cfg.max_cog)]
+            cog_valid = df["cog"].notna()
+            df = df[~cog_valid | ((df["cog"] >= cfg.min_cog) & (df["cog"] <= cfg.max_cog))]
         if "rot" in df.columns:
-            df = df[(df["rot"] >= cfg.min_rot) & (df["rot"] <= cfg.max_rot)]
+            rot_valid = df["rot"].notna()
+            df = df[~rot_valid | ((df["rot"] >= cfg.min_rot) & (df["rot"] <= cfg.max_rot))]
         return df
 
 
@@ -123,7 +128,7 @@ class DataCleaner:
         """
         cfg = self.config.data_cleaning
         if "sog" not in df.columns or "vessel_type" not in df.columns:
-        return df
+            return df
 
         valid_speed = df["sog"] <= cfg.max_speed_normal
         is_high_speed = df["vessel_type"].astype(str).str.upper().isin(
@@ -175,8 +180,26 @@ class DataCleaner:
     @staticmethod
     def _parse_timestamps(df: pd.DataFrame) -> pd.DataFrame:
         """Convert timestamp column to datetime, handling errors."""
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-            # Drop rows where timestamp could not be parsed
-            df = df.dropna(subset=["timestamp"])
+        if "timestamp" not in df.columns:
+            return df
+
+        # Try parsing with the API format first, then fall back to default
+        parsed = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+
+        # For any that still failed, try stripping the trailing "UTC" text
+        mask_failed = parsed.isna() & df["timestamp"].notna()
+        if mask_failed.any():
+            cleaned = df.loc[mask_failed, "timestamp"].astype(str).str.rstrip(" UTC")
+            parsed.loc[mask_failed] = pd.to_datetime(cleaned, errors="coerce", utc=True)
+
+        # Last resort: assign current time for any remaining unparseable values
+        still_failed = parsed.isna() & df["timestamp"].notna()
+        if still_failed.any():
+            logger.warning(
+                "%d timestamps could not be parsed – using current time.",
+                still_failed.sum(),
+            )
+            parsed.loc[still_failed] = pd.Timestamp.now(tz="UTC")
+
+        df["timestamp"] = parsed
         return df
