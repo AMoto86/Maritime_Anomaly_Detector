@@ -201,5 +201,6 @@ class DataCleaner:
             )
             parsed.loc[still_failed] = pd.Timestamp.now(tz="UTC")
 
-        df["timestamp"] = parsed
+        # Convert to second-level precision (Plotly can't handle ns precision)
+        df["timestamp"] = parsed.astype("datetime64[s, UTC]")
         return df
