@@ -73,16 +73,6 @@ class DataCleaner:
     def _clean_numerics(self, df: pd.DataFrame) -> pd.DataFrame:
         cfg = self.config.data_cleaning
 
-
-
-
-
-
-
-
-
-
-
         for col in (
             "sog", "cog", "rot", "latitude", "longitude",
             "heading", "length", "width",
@@ -105,11 +95,6 @@ class DataCleaner:
 
     def _validate_geographic_bounds(self, df: pd.DataFrame) -> pd.DataFrame:
         cfg = self.config.data_cleaning
-
-
-
-
-
 
         mask = (
             (df["latitude"] >= cfg.min_latitude)
@@ -140,15 +125,6 @@ class DataCleaner:
         if "sog" not in df.columns or "vessel_type" not in df.columns:
         return df
 
-
-
-
-
-
-
-
-
-
         valid_speed = df["sog"] <= cfg.max_speed_normal
         is_high_speed = df["vessel_type"].astype(str).str.upper().isin(
             [t.upper() for t in cfg.high_speed_craft_types]
@@ -156,29 +132,7 @@ class DataCleaner:
         mask = valid_speed | is_high_speed
         return df[mask]
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     @staticmethod
-
-
-
-
-
-
     def _impute_missing(df: pd.DataFrame) -> pd.DataFrame:
         """Fill / cap missing numeric values with sensible defaults."""
         if "sog" in df.columns:
